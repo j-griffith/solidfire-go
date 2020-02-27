@@ -42,6 +42,8 @@ func iscsiCmd(args ...string) (string, error) {
 	cmd.Stderr = &stdout
 	defer stdout.Reset()
 
+	debug.Printf("JDG: iscsi cmd: %+v\n", args)
+
 	// we're using Start and Wait because we want to grab exit codes
 	err := cmd.Start()
 	if err != nil {

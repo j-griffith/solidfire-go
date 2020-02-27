@@ -96,14 +96,22 @@ func NewClient(c string) (*Client, error) {
 	return &client, nil
 }
 
-func (c *Client) CreateVolume(req sdk.CreateVolumeRequest) (*sdk.Volume, error) {
+func (c *Client) GetCreateVolume(req sdk.CreateVolumeRequest) (*sdk.Volume, error) {
 	ctx := context.Background()
-	v, sdkErr := c.SFClient.CreateVolume(ctx, &req)
+	v, sdkErr := c.GetVolumeByName(req.Name)
+	if sdkErr != nil {
+	}
+
+	if v != nil {
+		return v, nil
+	}
+
+	vol, sdkErr := c.SFClient.CreateVolume(ctx, &req)
 	if sdkErr != nil {
 		log.Printf("failed to create volume: %+v\n", sdkErr)
 		return &sdk.Volume{}, sdkErr
 	}
-	return &v.Volume, nil
+	return &vol.Volume, nil
 }
 
 func (c *Client) DeleteVolume(volumeID int64) error {
@@ -138,6 +146,24 @@ func (c *Client) ModifyQoS(volumeID int64, qos *sdk.QoS) error {
 	ctx := context.Background()
 	_, err := c.SFClient.ModifyVolume(ctx, &req)
 	return err
+}
+
+func (c *Client) GetVolumeByName(volumeName string) (*sdk.Volume, error) {
+	req := sdk.ListVolumesForAccountRequest{}
+	req.AccountID = c.AccountID
+
+	ctx := context.Background()
+	response, err := c.SFClient.ListVolumesForAccount(ctx, &req)
+	if len(response.Volumes) > 0 {
+		return &response.Volumes[0], err
+	}
+	for _, v := range response.Volumes {
+		// NOTE: Warning, I'm not checking for duplicate names which sadly is valid on SF
+		if v.Name == volumeName {
+			return &v, nil
+		}
+	}
+	return &sdk.Volume{}, err
 }
 
 func (c *Client) GetVolume(volumeID int64) (*sdk.Volume, error) {
@@ -192,10 +218,22 @@ func (c *Client) buildConnector(volumeID int64) (*iscsi.Connector, error) {
 }
 
 func (c *Client) ConnectVolume(volumeID int64) (string, error) {
-	connector, _ := c.buildConnector(volumeID)
-	path, err := iscsi.Connect(*connector)
+	v, err := c.GetVolume(volumeID)
 	if err != nil {
+		return "", err
+	}
+	path := "/dev/disk/by-path/ip-" + c.SVIP + "-iscsi-" + v.Iqn + "-lun-0"
+
+	// Make sure it's not already attached
+	if !sdk.WaitForPathToExist(path, 1) {
+		err = sdk.LoginWithChap(v.Iqn, c.SVIP, c.TenantName, c.InitiatorSecret, c.InitiatorIface)
+		if err != nil {
+			return "", err
+		}
 	}
 
-	return path, nil
+	if !sdk.WaitForPathToExist(path, 5) {
+		return path, fmt.Errorf("failed to find device at path: %v\n", path)
+	}
+	return sdk.GetDeviceFileFromIscsiPath(path)
 }
